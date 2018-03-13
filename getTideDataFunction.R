@@ -5,22 +5,12 @@ require(RCurl)
 require(stringi)
 require(tidyr)
 
-## source: https://rpubs.com/shyambv/extract_htmljsonxml_data
-
-bookshtml.link <- getURL("https://msdn.microsoft.com/en-us/library/ms762258(v=vs.85).aspx") %>%  htmlParse(asText = TRUE)
-
-bookshtml.xml <- xpathSApply(bookshtml.link,"//div[@class='codeSnippetContainerCode']",xmlValue)
-
-booksexact <- bookshtml.xml[1] %>%  str_replace_all("[\r\n]","") %>%  str_trim(side = "both")
-
-books.xml.parse <- xmlParse(booksexact) %>% xmlToDataFrame()
-
-books.json <- toJSON(books.xml.parse)
+## Inspired by: https://rpubs.com/shyambv/extract_htmljsonxml_data
 
 tides_url <-"http://tides.mobilegeographics.com/calendar/month/493.html?y=2016&m=8&d=1"
 
-tidesLink <- getURL(tides_url) %>% htmlParse(asText = TRUE)
-tidesXml <- xpathApply(tidesLink, "//table")
+tidesLink <- getURL(tides_url) %>% XML::htmlParse(asText = TRUE)
+tidesXml <- XML::xpathApply(tidesLink, "//table")
 tidesExact <- tidesXml[1] %>%  str_replace_all("[\r\n]","") %>%  str_trim(side = "both")
 tidesParsed <- xmlParse(tidesXml[1]) %>% xmlToDataFrame()
 
@@ -31,17 +21,17 @@ rawTable <- XML::readHTMLTable(tides_url) %>% data.frame()
 # params 
 month <- 8
 year <- 2016
-sitenum <- 493 ##   TODO: fetch site? 
+sitecode <- 493 ##   TODO: fetch site? 
 
 # eventually, in shinyApp, have ability to search for site by (a) name and (b) coords
 # rawSiteIndex <- XML::readHTMLTable('http://tides.mobilegeographics.com/index.html')
 # SiteIndexTable <- dplyr::bind_rows(rawSiteIndex)
 # given "siteName," listed name of site
-# sitenum = which(SiteIndexTable$Location == siteName) - 1
+# sitecode = which(SiteIndexTable$Location == siteName) - 1
 
-GetTidesData <- function(year, month, sitenum) {
+GetTidesData_Month <- function(year, month, sitecode) {
   # actually fetch table 
-  tides_url <- paste0('http://tides.mobilegeographics.com/calendar/month/',sitenum,'.html?y=',year,'&m=',month,'&d=1')
+  tides_url <- paste0('http://tides.mobilegeographics.com/calendar/month/',sitecode,'.html?y=',year,'&m=',month,'&d=1')
   RawTidesTable <- XML::readHTMLTable(tides_url) %>% data.frame()
   
   ## reshape data
@@ -87,12 +77,50 @@ GetTidesData <- function(year, month, sitenum) {
   return(TidesData)
 }
 
+
+# Parameters:
+# firstDate, a string in ymd format or date object
+# lastDate, a string in ymd format or date object
+# sitecode, the mobilegeographic site number
+GetTidesData_Range <- function(firstDate, lastDate, sitecode) {
+  require(lubridate)
+  
+}
+
 # get full set of tide data for Oddessy !
-FullTideData <- GetTidesData(year = 2016, month = 3, sitenum = 493)
+FullTideData <- GetTidesData(year = 2016, month = 3, sitecode = 493)
 for (mo in 4:12) {
-  newData <- GetTidesData(year = 2016, month = mo, sitenum = 493)
+  newData <- GetTidesData(year = 2016, month = mo, sitecode = 493)
   FullTideData <- bind_rows(FullTideData, newData)
 }
 
 FullTideData <- FullTideData[!is.na(FullTideData$Datetime),]
 write.csv(FullTideData, 'Belize City Tide Data 2016.csv')
+
+MakeDate <- function(dateString) {
+  if (class(dateString) == 'character') {
+    # if character string, try to convert to ymd. If fails, stop function. 
+    dateString <- tryCatch(expr = lubridate::ymd(dateString), 
+      warning = function(w) stop('Error in MakeDate(): must provide either Date object or "yyyy-mm-dd" character string.')
+    )
+    
+  } else if (class(dateString) != 'Date') {
+    stop("Date object not provided.")
+  }
+  
+  return(dateString)
+}
+
+# GetTidesData_Date
+# date: a Date object or string in "yyyy-mm-dd" format.
+# sitecode: a mobilegeographic site number 
+GetTidesData_Date <- function(date, sitecode) {
+  # ensure correct date format, convert to date
+  date <- MakeDate(date)
+  
+  WholeMonthData <- GetTidesData_Month(lubridate::year(date), lubridate::month(date), sitecode)
+  
+  DateData <- filter(WholeMonthData, date(Datetime) == date)
+  
+  return(DateData)
+}
