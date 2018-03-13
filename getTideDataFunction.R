@@ -1,27 +1,8 @@
-require(jsonlite)
 require(XML)
 require(dplyr)
-require(RCurl)
-require(stringi)
-require(tidyr)
+require(lubridate)
 
 ## Inspired by: https://rpubs.com/shyambv/extract_htmljsonxml_data
-
-tides_url <-"http://tides.mobilegeographics.com/calendar/month/493.html?y=2016&m=8&d=1"
-
-tidesLink <- getURL(tides_url) %>% XML::htmlParse(asText = TRUE)
-tidesXml <- XML::xpathApply(tidesLink, "//table")
-tidesExact <- tidesXml[1] %>%  str_replace_all("[\r\n]","") %>%  str_trim(side = "both")
-tidesParsed <- xmlParse(tidesXml[1]) %>% xmlToDataFrame()
-
-### !!!!!
-rawTable <- XML::readHTMLTable(tides_url) %>% data.frame()
-
-### start function planning
-# params 
-month <- 8
-year <- 2016
-sitecode <- 493 ##   TODO: fetch site? 
 
 # eventually, in shinyApp, have ability to search for site by (a) name and (b) coords
 # rawSiteIndex <- XML::readHTMLTable('http://tides.mobilegeographics.com/index.html')
@@ -29,13 +10,32 @@ sitecode <- 493 ##   TODO: fetch site?
 # given "siteName," listed name of site
 # sitecode = which(SiteIndexTable$Location == siteName) - 1
 
+MakeDate <- function(dateString) {
+  if (class(dateString) == 'character') {
+    # if character string, try to convert to ymd. If fails, stop function. 
+    dateString <- tryCatch(expr = lubridate::ymd(dateString), 
+      warning = function(w) stop('Error in MakeDate(): must provide either Date object or "yyyy-mm-dd" character string.')
+    )
+    
+  } else if (class(dateString) != 'Date') {
+    stop("Date object not provided.")
+  }
+  
+  return(dateString)
+}
+
 GetTidesData_Month <- function(year, month, sitecode) {
   # actually fetch table 
   tides_url <- paste0('http://tides.mobilegeographics.com/calendar/month/',sitecode,'.html?y=',year,'&m=',month,'&d=1')
-  RawTidesTable <- XML::readHTMLTable(tides_url) %>% data.frame()
+  
+  # sometimes the function fails a few times, so make this little loop to wait
+  RawTidesTable <- data.frame()
+  while(NROW(RawTidesTable) < 1) {
+    RawTidesTable <- XML::readHTMLTable(tides_url) 
+  }
+  RawTidesTable <- as.data.frame(RawTidesTable) # convert to dataframe
   
   ## reshape data
-  
   # stack columns labeled "high" (number may vary)
   onlyHighData <- RawTidesTable[ ,append(1, which(grepl('High',colnames(RawTidesTable))))] %>% 
     tidyr::gather(key = NULL.Day)
@@ -58,7 +58,8 @@ GetTidesData_Month <- function(year, month, sitecode) {
   # Extract timestamp before the slash
   RawTidesLong$Time <- substr(RawTidesLong$TimeFt, 1, regexpr("/", RawTidesLong$TimeFt) - 2) 
   # Extract feet after slash and before units; convert to number
-  RawTidesLong$Feet <- substr(RawTidesLong$TimeFt, regexpr("/", RawTidesLong$TimeFt) + 2, regexpr("ft", RawTidesLong$TimeFt) - 2) %>% as.numeric
+  RawTidesLong$HeightUnit <- ifelse(grepl("ft",RawTidesLong$TimeFt[1]), 'ft','m') %>% as.factor()
+  RawTidesLong$Height <- substr(RawTidesLong$TimeFt, regexpr("/", RawTidesLong$TimeFt) + 2, regexpr(RawTidesLong$HeightUnit[1], RawTidesLong$TimeFt) - 2) %>% as.numeric
   
   # Convert date from weird unidentifiable R date object to just some characters
   RawTidesLong$Date <- as.character(RawTidesLong$Date)
@@ -68,10 +69,11 @@ GetTidesData_Month <- function(year, month, sitecode) {
   # make and parse a single datetime object
   RawTidesLong$Datetime <- lubridate::ymd_hm(paste0(year,'-',month,'-',RawTidesLong$Day,' ',RawTidesLong$Time))
   
-  TidesData <- select(RawTidesLong, Datetime, Tide, Feet)
-  TidesData$Tide <- as.factor(TidesData$Tide)
+  # new table with only relevant columns
+  TidesData <- select(RawTidesLong, Datetime, Tide, Height, HeightUnit)
+  TidesData$Tide <- as.factor(TidesData$Tide) # convert to factor for better summary stats
   
-  # reorder data?
+  # reorder data
   TidesData <- TidesData[order(TidesData$Datetime),]
   
   return(TidesData)
@@ -83,33 +85,26 @@ GetTidesData_Month <- function(year, month, sitecode) {
 # lastDate, a string in ymd format or date object
 # sitecode, the mobilegeographic site number
 GetTidesData_Range <- function(firstDate, lastDate, sitecode) {
-  require(lubridate)
+  firstDate <- MakeDate(firstDate)
+  lastDate <- MakeDate(lastDate)
+
+  firstMonth <- lubridate::ceiling_date(firstDate, 'month')
+  lastMonth <- lubridate::floor_date(lastDate, 'month')
   
-}
-
-# get full set of tide data for Oddessy !
-FullTideData <- GetTidesData(year = 2016, month = 3, sitecode = 493)
-for (mo in 4:12) {
-  newData <- GetTidesData(year = 2016, month = mo, sitecode = 493)
-  FullTideData <- bind_rows(FullTideData, newData)
-}
-
-FullTideData <- FullTideData[!is.na(FullTideData$Datetime),]
-write.csv(FullTideData, 'Belize City Tide Data 2016.csv')
-
-MakeDate <- function(dateString) {
-  if (class(dateString) == 'character') {
-    # if character string, try to convert to ymd. If fails, stop function. 
-    dateString <- tryCatch(expr = lubridate::ymd(dateString), 
-      warning = function(w) stop('Error in MakeDate(): must provide either Date object or "yyyy-mm-dd" character string.')
-    )
-    
-  } else if (class(dateString) != 'Date') {
-    stop("Date object not provided.")
+  DateVec <- seq.Date(from = firstMonth, to = lastMonth, by = 'month') %>% floor_date('month') %>% as.character()
+  
+  FullTideData <- GetTidesData_Month(year = year(firstDate), month = month(firstDate), sitecode = sitecode)
+  for (dt in DateVec) {
+    dt <- ymd(dt)
+    newData <- GetTidesData_Month(year = lubridate::year(dt), month = lubridate::month(dt), sitecode = sitecode)
+    FullTideData <- bind_rows(FullTideData, newData)
   }
   
-  return(dateString)
+  TideData <- filter(FullTideData, Datetime >= floor_date(firstDate,'day') & Datetime <= ceiling_date(lastDate,'day'))
+  
+  return(TideData)
 }
+
 
 # GetTidesData_Date
 # date: a Date object or string in "yyyy-mm-dd" format.
